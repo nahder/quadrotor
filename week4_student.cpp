@@ -30,19 +30,20 @@
 #define SAFETY_HEARTBEAT_TO 250
 
 // define filter-related constants
-#define A_FILTER 0.02
+#define A_FILTER 0.01 // 0.02
 
-
-#define KP 5.0
+#define KP 12.5
+#define KD 1.5
+#define KI 0.015 
 
 //add global variable
 int pwm;
 
 float motor_0_pwm = 0.0, motor_1_pwm = 0.0, motor_2_pwm = 0.0, motor_3_pwm = 0.0;
-float neutral_power = 1100;
+float neutral_power = 1300;
 
 //add constants
-#define PWM_MAX 1300
+#define PWM_MAX 1600
 #define LED0 0x6
 #define LED0_ON_L 0x6
 #define LED0_ON_H 0x7
@@ -75,6 +76,8 @@ void update_filter();
 void get_rpy();
 void print_milestone1();
 void print_day3_milestone2();
+void print_day4_milestone3();
+void print_day4_milestone4();
 
 void print_filter();
 void safety_check();
@@ -174,13 +177,11 @@ int main(int argc, char * argv[])
   while (run_program == 1) {
     read_imu();     // read data from IMU, caluclate accelerometer pitch,roll
 
-    // print_milestone1();
-
     update_filter();     // update complementary filter
-    // print_filter();
-    // print_day3_milestone2();
+    // print_data();
 
     pid_update();
+
     set_PWM(0, motor_0_pwm);
     set_PWM(1, motor_1_pwm);
     set_PWM(2, motor_2_pwm);
@@ -251,32 +252,6 @@ void safety_check()
     set_PWM(2, 1000);
     set_PWM(3, 1000);
   }
-}
-
-void print_filter()
-{
-
-  printf(
-    "%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f\n\r",
-    roll_accel,
-    pitch_accel,
-    roll_t,
-    pitch_t,
-    roll_gyro_delta,
-    pitch_gyro_delta,
-    imu_diff_copy);
-}
-
-// print gx gy gz roll pitch (angles)
-void print_milestone1()
-{
-  printf(
-    "gx %10.5f gy %10.5f gz %10.5f roll %10.5f pitch %10.5f\n\r",
-    imu_data[0],
-    imu_data[1],
-    imu_data[2],
-    roll_accel,
-    pitch_accel);
 }
 
 void calibrate_imu()
@@ -582,18 +557,33 @@ void set_PWM(uint8_t channel, float time_on_us)
 
 void pid_update()
 {
+  static float pitch_integral = 0.0;
+  
+  auto pitch_vel = imu_data[0]; // copy the gyro value
 
   //pitch_t, roll_t filtered
-  auto error = pitch_t - pitch_setpoint;
+  auto pitch_error = pitch_t - pitch_setpoint;
 
-  motor_0_pwm = neutral_power + KP * error;
-  motor_3_pwm = neutral_power + KP * error;
+  // integrate error
+  pitch_integral += pitch_error * KI;
 
-  motor_1_pwm = neutral_power - KP * error;
-  motor_2_pwm = neutral_power - KP * error;
+  // limit integral term
+  if (pitch_integral > 50.0){
+    pitch_integral = 50.0;
+  }
+  if (pitch_integral < -50.0){
+    pitch_integral = -50.0;
+  }
+
+  motor_0_pwm = neutral_power + KP * pitch_error + KD * pitch_vel + pitch_integral;
+  motor_3_pwm = neutral_power + KP * pitch_error + KD * pitch_vel + pitch_integral;
+
+  motor_1_pwm = neutral_power - KP * pitch_error - KD * pitch_vel - pitch_integral;
+  motor_2_pwm = neutral_power - KP * pitch_error - KD * pitch_vel - pitch_integral;
+
 }
 
-void print_day3_milestone2()
+void print_data()
 {
   printf(
     "%10.5f,%10.5f,%10.5f,%10.5f\n\r",
