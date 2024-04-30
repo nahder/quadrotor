@@ -34,7 +34,8 @@
 
 #define KP 12.5
 #define KD 1.5
-#define KI 0.015 
+#define KI 0.02
+
 
 //add global variable
 int pwm;
@@ -74,10 +75,8 @@ void calibrate_imu();
 void read_imu();
 void update_filter();
 void get_rpy();
-void print_milestone1();
-void print_day3_milestone2();
-void print_day4_milestone3();
-void print_day4_milestone4();
+
+void print_data();
 
 void print_filter();
 void safety_check();
@@ -87,6 +86,8 @@ void init_motor(uint8_t channel);
 void set_PWM(uint8_t channel, float time_on_us);
 
 void pid_update();
+
+void keyboard_interface();
 
 // global variables
 int imu;
@@ -104,11 +105,13 @@ struct timeval tv;
 float yaw = 0;
 float pitch_accel = 0;  // pitch according to accel
 float roll_accel = 0;   // roll according to accel
-
 float roll_gyro_delta;
 float pitch_gyro_delta;
 float pitch_t = 0.0;    // pitch according to filter
 float roll_t = 0.0;     // roll according to filter
+static float pitch_integral = 0.0;
+
+float thrust = 0.0;
 
 float pitch_setpoint = 0.0;
 
@@ -120,10 +123,15 @@ struct Keyboard
   char key_press;
   int heartbeat;
   int version;
+  bool clear;
+
 };
 Keyboard * shared_memory;
 int run_program = 1;
 
+bool paused = true;
+bool calibrate = false;
+bool firstrun = true;
 // function to add
 void setup_keyboard()
 {
@@ -175,24 +183,42 @@ int main(int argc, char * argv[])
   signal(SIGINT, &trap);
 
   while (run_program == 1) {
-    read_imu();     // read data from IMU, caluclate accelerometer pitch,roll
 
-    update_filter();     // update complementary filter
-    // print_data();
+    keyboard_interface();
 
-    pid_update();
+    if (paused) {
+      set_PWM(0, 1000);
+      set_PWM(1, 1000);
+      set_PWM(2, 1000);
+      set_PWM(3, 1000);
 
-    set_PWM(0, motor_0_pwm);
-    set_PWM(1, motor_1_pwm);
-    set_PWM(2, motor_2_pwm);
-    set_PWM(3, motor_3_pwm);
+      if (calibrate) {
+        calibrate_imu();
+        firstrun = true;
+        calibrate = false;
+      }
+
+    } else {
+
+      read_imu();   // read data from IMU, caluclate accelerometer pitch,roll
+
+      update_filter();   // update complementary filter
+
+      pid_update();
+
+      set_PWM(0, motor_0_pwm);
+      set_PWM(1, motor_1_pwm);
+      set_PWM(2, motor_2_pwm);
+      set_PWM(3, motor_3_pwm);
+
+      print_data();
+    }
 
     // time
     gettimeofday(&tv, NULL);
-
-
     // safety checks
     safety_check();
+
   }
   return 0;
 }
@@ -201,7 +227,7 @@ void safety_check()
 {
   static long last_heartbeat_time = 0;
   static int last_heartbeat = 0;
-  static bool firstrun = true;
+
 
   if (firstrun) {
     long curr_time = tv.tv_sec * 1000LL + tv.tv_usec / 1000;
@@ -254,6 +280,48 @@ void safety_check()
   }
 }
 
+void keyboard_interface()
+{
+  Keyboard keyboard = *shared_memory;     // to refresh values from shared memory first
+
+  //43 = +
+  if (keyboard.clear == true) {
+    if (keyboard.key_press == 43) {
+      thrust += 10;
+    }
+    //45 = -
+    if (keyboard.key_press == 45) {
+      thrust -= 10;
+    }
+
+    //s = 115
+    if (keyboard.key_press == 115) {
+      pitch_setpoint -= 1;
+    }
+
+    //w = 119
+    if (keyboard.key_press == 119) {
+      pitch_setpoint += 1;
+    }
+
+    //p = 112
+    if (keyboard.key_press == 112) {
+      paused = true;
+    }
+    //u = 117
+    if (keyboard.key_press == 117) {
+      paused = false;
+    }
+
+    //c = 99
+    if (keyboard.key_press == 99) {
+      calibrate = true;
+    }
+    shared_memory->clear = false;
+  }
+
+}
+
 void calibrate_imu()
 {
   /*
@@ -261,6 +329,9 @@ void calibrate_imu()
   */
   float x_gyro_offset = 0.0, y_gyro_offset = 0.0, z_gyro_offset = 0.0;
   float roll_offset = 0.0, pitch_offset = 0.0;
+  pitch_calibration = 0.0;
+  roll_calibration = 0.0;
+
 
   float num_samples = 1000;
 
@@ -557,8 +628,8 @@ void set_PWM(uint8_t channel, float time_on_us)
 
 void pid_update()
 {
-  static float pitch_integral = 0.0;
-  
+  // static float pitch_integral = 0.0;
+
   auto pitch_vel = imu_data[0]; // copy the gyro value
 
   //pitch_t, roll_t filtered
@@ -567,31 +638,33 @@ void pid_update()
   // integrate error
   pitch_integral += pitch_error * KI;
 
+  auto KI_SAT = 100.0;
   // limit integral term
-  if (pitch_integral > 50.0){
-    pitch_integral = 50.0;
+  if (pitch_integral > KI_SAT) {
+    pitch_integral = KI_SAT;
   }
-  if (pitch_integral < -50.0){
-    pitch_integral = -50.0;
+  if (pitch_integral < -KI_SAT) {
+    pitch_integral = -KI_SAT;
   }
 
-  motor_0_pwm = neutral_power + KP * pitch_error + KD * pitch_vel + pitch_integral;
-  motor_3_pwm = neutral_power + KP * pitch_error + KD * pitch_vel + pitch_integral;
 
-  motor_1_pwm = neutral_power - KP * pitch_error - KD * pitch_vel - pitch_integral;
-  motor_2_pwm = neutral_power - KP * pitch_error - KD * pitch_vel - pitch_integral;
+  motor_0_pwm = neutral_power + thrust + KP * pitch_error + KD * pitch_vel + pitch_integral;
+  motor_3_pwm = neutral_power + thrust + KP * pitch_error + KD * pitch_vel + pitch_integral;
+
+  motor_1_pwm = neutral_power + thrust - KP * pitch_error - KD * pitch_vel - pitch_integral;
+  motor_2_pwm = neutral_power + thrust - KP * pitch_error - KD * pitch_vel - pitch_integral;
 
 }
 
 void print_data()
 {
   printf(
-    "%10.5f,%10.5f,%10.5f,%10.5f\n\r",
-    // roll_accel,
-    pitch_accel,
-    // roll_t,
-    pitch_t,
+    "%10.5f,%10.5f,%10.5f,%10.5f, %10.5f\n\r",
     motor_0_pwm,
-    motor_1_pwm
+    motor_1_pwm,
+    pitch_gyro_delta,
+    pitch_t,
+    pitch_integral
+
   );
 }
