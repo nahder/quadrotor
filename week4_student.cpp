@@ -32,10 +32,14 @@
 // define filter-related constants
 #define A_FILTER 0.01 // 0.02
 
-#define KP 12.5
-#define KD 1.5
-#define KI 0.02
+#define KP 11.03
+#define KD 1.8
+#define KI 0.045
 
+
+// #define KP 11.68
+// #define KD 1.8
+// #define KI 0.03
 
 //add global variable
 int pwm;
@@ -659,12 +663,8 @@ void pid_update()
 void print_data()
 {
   printf(
-    "%10.5f,%10.5f,%10.5f,%10.5f, %10.5f\n\r",
-    motor_0_pwm,
-    motor_1_pwm,
-    pitch_gyro_delta,
-    pitch_t,
-    pitch_integral
-
+    "%10.5f,%10.5f\n\r",
+    pitch_setpoint,
+    pitch_t
   );
 }
