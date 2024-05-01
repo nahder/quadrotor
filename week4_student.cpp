@@ -32,14 +32,17 @@
 // define filter-related constants
 #define A_FILTER 0.01 // 0.02
 
-#define KP 11.03
-#define KD 1.8
-#define KI 0.045
+#define KP_PITCH 0.0
+#define KD_PITCH 0.0
+#define KI_PITCH 0.0
 
+// #define KP_PITCH 11.03
+// #define KD_PITCH 1.8
+// #define KI_PITCH 0.045
 
-// #define KP 11.68
-// #define KD 1.8
-// #define KI 0.03
+#define KP_ROLL 10.5
+#define KD_ROLL 2.3
+#define KI_ROLL 0.01
 
 //add global variable
 int pwm;
@@ -102,7 +105,7 @@ float roll_calibration = 0; // accel calibration offsets
 float pitch_calibration = 0;
 float accel_z_calibration = 0;
 float imu_data[6]; // gyro xyz, accel xyz
-long time_curr;     // time-tracking variables
+long time_curr;     // time-tracKI_PITCHng variables
 long time_prev;
 struct timespec te;
 struct timeval tv;
@@ -114,10 +117,13 @@ float pitch_gyro_delta;
 float pitch_t = 0.0;    // pitch according to filter
 float roll_t = 0.0;     // roll according to filter
 static float pitch_integral = 0.0;
+static float roll_integral = 0.0;
 
 float thrust = 0.0;
 
 float pitch_setpoint = 0.0;
+
+float roll_setpoint = 0.0;
 
 float imu_diff_copy = 0.0;
 
@@ -159,7 +165,7 @@ void setup_keyboard()
   // sprintf (shared_memory, "test!!!!.");
 }
 
-// when cntrl+c pressed, kill motors
+// when cntrl+c pressed, KI_PITCHll motors
 void trap(int signal)
 {
   printf("ending program due to CRTL+C called\n\r");
@@ -308,6 +314,16 @@ void keyboard_interface()
       pitch_setpoint += 1;
     }
 
+    //a = 97
+    if (keyboard.key_press == 97) {
+      roll_setpoint -= 1;
+    }
+
+    //d = 100
+    if (keyboard.key_press == 100) {
+      roll_setpoint += 1;
+    }
+
     //p = 112
     if (keyboard.key_press == 112) {
       paused = true;
@@ -321,6 +337,7 @@ void keyboard_interface()
     if (keyboard.key_press == 99) {
       calibrate = true;
     }
+
     shared_memory->clear = false;
   }
 
@@ -551,7 +568,6 @@ int setup_imu()
   return 0;
 }
 
-
 void init_pwm()
 {
 
@@ -633,16 +649,19 @@ void set_PWM(uint8_t channel, float time_on_us)
 void pid_update()
 {
   // static float pitch_integral = 0.0;
-
   auto pitch_vel = imu_data[0]; // copy the gyro value
+  auto roll_vel = imu_data[1]; // copy the gyro value
 
   //pitch_t, roll_t filtered
   auto pitch_error = pitch_t - pitch_setpoint;
+  auto roll_error = roll_t - roll_setpoint;
 
   // integrate error
-  pitch_integral += pitch_error * KI;
+  pitch_integral += pitch_error * KI_PITCH;
+  roll_integral += roll_error * KI_ROLL;
 
   auto KI_SAT = 100.0;
+  auto KI_ROLL_SAT = 120.0;
   // limit integral term
   if (pitch_integral > KI_SAT) {
     pitch_integral = KI_SAT;
@@ -651,20 +670,43 @@ void pid_update()
     pitch_integral = -KI_SAT;
   }
 
+  // limit integral term
+  if (roll_integral > KI_ROLL_SAT) {
+    roll_integral = KI_ROLL_SAT;
+  }
+  if (roll_integral < -KI_ROLL_SAT) {
+    roll_integral = -KI_ROLL_SAT;
+  }
 
-  motor_0_pwm = neutral_power + thrust + KP * pitch_error + KD * pitch_vel + pitch_integral;
-  motor_3_pwm = neutral_power + thrust + KP * pitch_error + KD * pitch_vel + pitch_integral;
+  motor_0_pwm = neutral_power + thrust +
+    KP_PITCH * pitch_error + KD_PITCH * pitch_vel + pitch_integral -
+    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral;
 
-  motor_1_pwm = neutral_power + thrust - KP * pitch_error - KD * pitch_vel - pitch_integral;
-  motor_2_pwm = neutral_power + thrust - KP * pitch_error - KD * pitch_vel - pitch_integral;
+  motor_3_pwm = neutral_power + thrust +
+    KP_PITCH * pitch_error + KD_PITCH * pitch_vel + pitch_integral +
+    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral;
+
+  motor_1_pwm = neutral_power + thrust -
+    KP_PITCH * pitch_error - KD_PITCH * pitch_vel - pitch_integral -
+    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral;
+
+  motor_2_pwm = neutral_power + thrust -
+    KP_PITCH * pitch_error - KD_PITCH * pitch_vel - pitch_integral +
+    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral;
 
 }
 
 void print_data()
 {
+  // printf(
+  //   "%10.5f,%10.5f\n\r",
+  //   pitch_setpoint,
+  //   pitch_t
+  // );
+
   printf(
     "%10.5f,%10.5f\n\r",
-    pitch_setpoint,
-    pitch_t
+    roll_setpoint,
+    roll_t
   );
 }
