@@ -32,23 +32,29 @@
 // define filter-related constants
 #define A_FILTER 0.01 // 0.02
 
-#define KP_PITCH 0.0
-#define KD_PITCH 0.0
-#define KI_PITCH 0.0
+// #define KP_PITCH 0.0
+// #define KD_PITCH 0.0
+// #define KI_PITCH 0.0
 
-// #define KP_PITCH 11.03
-// #define KD_PITCH 1.8
-// #define KI_PITCH 0.045
+#define KP_PITCH 11.03
+#define KD_PITCH 1.8
+#define KI_PITCH 0.045
+
+// #define KP_ROLL 0.0
+// #define KD_ROLL 0.0
+// #define KI_ROLL 0.0
 
 #define KP_ROLL 10.5
-#define KD_ROLL 2.3
-#define KI_ROLL 0.01
+#define KD_ROLL 1.3
+#define KI_ROLL 0.05
+
+#define KD_YAW 2.5
 
 //add global variable
 int pwm;
 
 float motor_0_pwm = 0.0, motor_1_pwm = 0.0, motor_2_pwm = 0.0, motor_3_pwm = 0.0;
-float neutral_power = 1300;
+float neutral_power = 1200;
 
 //add constants
 #define PWM_MAX 1600
@@ -547,7 +553,7 @@ int setup_imu()
     // c = wiringPiI2CReadReg8(imu, ACCEL_CONFIG2);
     // printf("accel config 2 %d \n", c);
 
-    // wiringPiI2CWriteReg8(imu, ACCEL_CONFIG2, 0x04 | 0x01 << 3);
+    wiringPiI2CWriteReg8(imu, ACCEL_CONFIG2, 0x04);
     // c = wiringPiI2CReadReg8(imu, ACCEL_CONFIG2);
     // printf("accel config 2 %d \n", c);
 
@@ -651,6 +657,7 @@ void pid_update()
   // static float pitch_integral = 0.0;
   auto pitch_vel = imu_data[0]; // copy the gyro value
   auto roll_vel = imu_data[1]; // copy the gyro value
+  auto yaw_vel = imu_data[2]; // copy the gyro value
 
   //pitch_t, roll_t filtered
   auto pitch_error = pitch_t - pitch_setpoint;
@@ -678,21 +685,22 @@ void pid_update()
     roll_integral = -KI_ROLL_SAT;
   }
 
+  // FR
   motor_0_pwm = neutral_power + thrust +
     KP_PITCH * pitch_error + KD_PITCH * pitch_vel + pitch_integral -
-    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral;
-
+    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral - KD_YAW * yaw_vel;
+  // FL
   motor_3_pwm = neutral_power + thrust +
     KP_PITCH * pitch_error + KD_PITCH * pitch_vel + pitch_integral +
-    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral;
-
+    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral + KD_YAW * yaw_vel;
+  // RR
   motor_1_pwm = neutral_power + thrust -
     KP_PITCH * pitch_error - KD_PITCH * pitch_vel - pitch_integral -
-    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral;
-
+    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral + KD_YAW * yaw_vel;
+  // RL
   motor_2_pwm = neutral_power + thrust -
     KP_PITCH * pitch_error - KD_PITCH * pitch_vel - pitch_integral +
-    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral;
+    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral - KD_YAW * yaw_vel;
 
 }
 
@@ -704,9 +712,17 @@ void print_data()
   //   pitch_t
   // );
 
+//   printf(
+//     "%10.5f,%10.5f\n\r",
+//     roll_setpoint,
+//     roll_t
+//   );
+
   printf(
-    "%10.5f,%10.5f\n\r",
-    roll_setpoint,
-    roll_t
+    "%10.5f,%10.5f,%10.5f\n\r",
+    imu_data[2],
+    motor_0_pwm,
+    motor_3_pwm
   );
+
 }
