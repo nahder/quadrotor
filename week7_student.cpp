@@ -24,10 +24,10 @@
 
 
 // define safety-related constants
-#define SAFTEY_GYRO_RATE 300
+#define SAFTEY_GYRO_RATE 400
 #define SAFETY_ROLL_LIM 45
 #define SAFETY_PITCH_LIM 45
-#define SAFETY_HEARTBEAT_TO 250
+#define SAFETY_HEARTBEAT_TO 500
 
 // define filter-related constants
 #define A_FILTER 0.01 // 0.02
@@ -38,7 +38,7 @@
 
 #define KP_PITCH 11.03
 #define KD_PITCH 1.8
-#define KI_PITCH 0.045
+#define KI_PITCH 0.03 //0.045
 
 // #define KP_ROLL 0.0
 // #define KD_ROLL 0.0
@@ -46,7 +46,7 @@
 
 #define KP_ROLL 10.5
 #define KD_ROLL 1.3
-#define KI_ROLL 0.06
+#define KI_ROLL 0.03 // 0.06
 
 // #define KD_YAW 0.0
 
@@ -56,10 +56,10 @@
 int pwm;
 
 float motor_0_pwm = 0.0, motor_1_pwm = 0.0, motor_2_pwm = 0.0, motor_3_pwm = 0.0;
-float neutral_power = 1200;
+float neutral_power = 1400;
 
 //add constants
-#define PWM_MAX 1600
+#define PWM_MAX 1840
 #define LED0 0x6
 #define LED0_ON_L 0x6
 #define LED0_ON_H 0x7
@@ -102,7 +102,8 @@ void set_PWM(uint8_t channel, float time_on_us);
 
 void pid_update();
 
-void keyboard_interface();
+int map();
+void joystick_interface();
 
 // global variables
 int imu;
@@ -133,25 +134,33 @@ float pitch_setpoint = 0.0;
 
 float roll_setpoint = 0.0;
 
+float yaw_setpoint = 0.0;
+
 float imu_diff_copy = 0.0;
 
-// global variables to add
-struct Keyboard
+struct Joystick
 {
-  char key_press;
-  int heartbeat;
-  int version;
-  bool clear;
-
+  int key0; //byte 4, X = unpause
+  int key1; //byte 5, A = kill all
+  int key2; //byte 6, B = pause
+  int key3; //byte 7, Y = calibrate
+  int pitch;
+  int roll;
+  int yaw;
+  int thrust;
+  int sequence_num;
 };
-Keyboard * shared_memory;
+
+
+Joystick * joystick_memory;
+
 int run_program = 1;
 
 bool paused = true;
 bool calibrate = false;
 bool firstrun = true;
 // function to add
-void setup_keyboard()
+void setup_joystick()
 {
 
   int segment_id;
@@ -163,8 +172,8 @@ void setup_keyboard()
   /* Allocate a shared memory segment.  */
   segment_id = shmget(smhkey, shared_segment_size, IPC_CREAT | 0666);
   /* Attach the shared memory segment.  */
-  shared_memory = (Keyboard *)shmat(segment_id, 0, 0);
-  printf("shared memory attached at address %p\n", shared_memory);
+  joystick_memory = (Joystick *)shmat(segment_id, 0, 0);
+  printf("shared memory attached at address %p\n", joystick_memory);
   /* Determine the segment's size. */
   shmctl(segment_id, IPC_STAT, &shmbuffer);
   segment_size = shmbuffer.shm_segsz;
@@ -172,6 +181,7 @@ void setup_keyboard()
   /* Write a string to the shared memory segment.  */
   // sprintf (shared_memory, "test!!!!.");
 }
+
 
 // when cntrl+c pressed, KI_PITCHll motors
 void trap(int signal)
@@ -197,12 +207,13 @@ int main(int argc, char * argv[])
 
   setup_imu();
   calibrate_imu();
-  setup_keyboard();
+  setup_joystick();
   signal(SIGINT, &trap);
 
   while (run_program == 1) {
 
-    keyboard_interface();
+    // keyboard_interface();
+    joystick_interface();
 
     if (paused) {
       set_PWM(0, 1000);
@@ -246,14 +257,13 @@ void safety_check()
   static long last_heartbeat_time = 0;
   static int last_heartbeat = 0;
 
-
   if (firstrun) {
     long curr_time = tv.tv_sec * 1000LL + tv.tv_usec / 1000;
     last_heartbeat_time = curr_time;
     firstrun = false;
   }
 
-  Keyboard keyboard = *shared_memory;   // to refresh values from shared memory first
+  Joystick joystick = *joystick_memory;
 
   // gyros rate is too high
   if (imu_data[0] > SAFTEY_GYRO_RATE || imu_data[0] < -SAFTEY_GYRO_RATE ||
@@ -279,15 +289,14 @@ void safety_check()
     printf("ending program due to heartbeat timeout\n\r");
     run_program = 0;
   }
-  // update heartbeat time if theres a new heartbeat value
-  if (keyboard.heartbeat > last_heartbeat) {
+
+  if (joystick.sequence_num > last_heartbeat) {
     last_heartbeat_time = curr_time;
-    last_heartbeat = keyboard.heartbeat;
+    last_heartbeat = joystick.sequence_num;
   }
-  // whitespace
-  if (keyboard.key_press == 32) {
-    printf("ending program due to space pressed\n\r");
-    run_program = 0;
+
+  if (joystick.sequence_num == 255) {
+    last_heartbeat = -1;
   }
 
   if (run_program == 0.0) {
@@ -298,58 +307,64 @@ void safety_check()
   }
 }
 
-void keyboard_interface()
+
+int map(int original, int in_min, int in_max, int out_min, int out_max)
 {
-  Keyboard keyboard = *shared_memory;     // to refresh values from shared memory first
-
-  //43 = +
-  if (keyboard.clear == true) {
-    if (keyboard.key_press == 43) {
-      thrust += 10;
-    }
-    //45 = -
-    if (keyboard.key_press == 45) {
-      thrust -= 10;
-    }
-
-    //s = 115
-    if (keyboard.key_press == 115) {
-      pitch_setpoint -= 0.5;
-    }
-
-    //w = 119
-    if (keyboard.key_press == 119) {
-      pitch_setpoint += 0.5;
-    }
-
-    //a = 97
-    if (keyboard.key_press == 97) {
-      roll_setpoint += 0.5;
-    }
-
-    //d = 100
-    if (keyboard.key_press == 100) {
-      roll_setpoint -= 0.5;
-    }
-
-    //p = 112
-    if (keyboard.key_press == 112) {
-      paused = true;
-    }
-    //u = 117
-    if (keyboard.key_press == 117) {
-      paused = false;
-    }
-
-    //c = 99
-    if (keyboard.key_press == 99) {
-      calibrate = true;
-    }
-
-    shared_memory->clear = false;
-  }
+  return ((original - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min;
 
 }
+
+void joystick_interface()
+{
+
+  // int key0;   //byte 4, X = unpause
+  // int key1; //byte 5, A = kill all
+  // int key2; //byte 6, B = pause
+  // int key3; //byte 7, Y = calibrate
+  Joystick joystick = *joystick_memory;     // to refresh values from shared memory first
+  int thrust_mapped = 0, pitch_mapped = 0, roll_mapped = 0, yaw_mapped = 0;
+
+  //unpause
+  if (joystick.key0 == 1) {
+    paused = false;
+  }
+
+  if (joystick.key2 == 1) {
+    paused = true;
+  }
+
+  if (joystick.key3 == 1) {
+    calibrate = true;
+  }
+
+  if (joystick.key1 == 1) {
+    run_program = 0;
+  }
+
+  thrust_mapped = map(joystick.thrust, 255, 0, -250, 250);
+  pitch_mapped = map(joystick.pitch, 255, 0, -8, 8);
+  roll_mapped = map(joystick.roll, 255, 0, -8, 8);
+
+  yaw_mapped = map(joystick.yaw, 0, 255, -40, 40);
+
+  thrust = thrust_mapped;
+  pitch_setpoint = pitch_mapped;
+  roll_setpoint = roll_mapped;
+  yaw_setpoint = yaw_mapped;
+
+  //thrust ++ byte 1 (down)
+  //thrust -- byte 1 (up)
+
+  //yaw ++ byte 0 (right)
+  //yaw -- byte 0 (left)
+
+  //pitch ++ byte 3 (down)
+  //pitch -- byte 3 (up)
+
+  //roll ++ byte 2 (right)
+  //roll -- byte 2 (left)
+}
+
 
 void calibrate_imu()
 {
@@ -664,13 +679,14 @@ void pid_update()
   //pitch_t, roll_t filtered
   auto pitch_error = pitch_t - pitch_setpoint;
   auto roll_error = roll_t - roll_setpoint;
+  auto yaw_error = yaw_vel - yaw_setpoint;
 
   // integrate error
   pitch_integral += pitch_error * KI_PITCH;
   roll_integral += roll_error * KI_ROLL;
 
-  auto KI_SAT = 150.0;
-  auto KI_ROLL_SAT = 150.0;
+  auto KI_SAT = 80.0;
+  auto KI_ROLL_SAT = 80.0;
   // limit integral term
   if (pitch_integral > KI_SAT) {
     pitch_integral = KI_SAT;
@@ -690,48 +706,32 @@ void pid_update()
   // FR
   motor_0_pwm = neutral_power + thrust +
     KP_PITCH * pitch_error + KD_PITCH * pitch_vel + pitch_integral -
-    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral - KD_YAW * yaw_vel;
+    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral - KD_YAW * yaw_error;
   // FL
   motor_3_pwm = neutral_power + thrust +
     KP_PITCH * pitch_error + KD_PITCH * pitch_vel + pitch_integral +
-    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral + KD_YAW * yaw_vel;
+    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral + KD_YAW * yaw_error;
   // RR
   motor_1_pwm = neutral_power + thrust -
     KP_PITCH * pitch_error - KD_PITCH * pitch_vel - pitch_integral -
-    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral + KD_YAW * yaw_vel;
+    KP_ROLL * roll_error - KD_ROLL * roll_vel - roll_integral + KD_YAW * yaw_error;
   // RL
   motor_2_pwm = neutral_power + thrust -
     KP_PITCH * pitch_error - KD_PITCH * pitch_vel - pitch_integral +
-    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral - KD_YAW * yaw_vel;
+    KP_ROLL * roll_error + KD_ROLL * roll_vel + roll_integral - KD_YAW * yaw_error;
 
 }
 
 void print_data()
 {
   // printf(
-  //   "%10.5f,%10.5f\n\r",
+  //   "%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f\n\r",
+  //   pitch_t,
   //   pitch_setpoint,
-  //   pitch_t
+  //   roll_t,
+  //   roll_setpoint,
+  //   imu_data[2],
+  //   yaw_setpoint
   // );
-
-//   printf(
-//     "%10.5f,%10.5f\n\r",
-//     roll_setpoint,
-//     roll_t
-//   );
-
-  printf(
-    "%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f\n\r",
-    imu_data[1], // roll gyro
-    roll_gyro_delta, // integrator
-    roll_accel,
-    roll_t,
-    roll_setpoint,
-    imu_data[0], // 
-    pitch_gyro_delta, // integrator
-    pitch_accel,
-    pitch_t,
-    pitch_setpoint
-  );
 
 }
