@@ -9,6 +9,10 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <curses.h>
+#include "vive.h"
+
+//declare global struct
+Position local_p;
 
 // gcc -o week1 week_1.cpp -lwiringPi -lncurses -lm
 
@@ -28,6 +32,7 @@
 #define SAFETY_ROLL_LIM 45
 #define SAFETY_PITCH_LIM 45
 #define SAFETY_HEARTBEAT_TO 500
+#define SAFETY_VIVE_TO 500
 
 // define filter-related constants
 #define A_FILTER 0.01 // 0.02
@@ -36,27 +41,29 @@
 // #define KD_PITCH 0.0
 // #define KI_PITCH 0.0
 
-#define KP_PITCH 11.03
-#define KD_PITCH 1.8
+#define KP_PITCH 11.05 // 11.03
+#define KD_PITCH 1.45 //1.8
 #define KI_PITCH 0.03 //0.045
 
 // #define KP_ROLL 0.0
 // #define KD_ROLL 0.0
 // #define KI_ROLL 0.0
 
-#define KP_ROLL 10.5
-#define KD_ROLL 1.3
+#define KP_ROLL 10.5 //10.5
+#define KD_ROLL 1.25 // 1.3
 #define KI_ROLL 0.03 // 0.06
 
 // #define KD_YAW 0.0
 
-#define KD_YAW 2.5
+#define KD_YAW 2.8
+
+#define KP_YAW_POSITION 201.0
 
 //add global variable
 int pwm;
 
 float motor_0_pwm = 0.0, motor_1_pwm = 0.0, motor_2_pwm = 0.0, motor_3_pwm = 0.0;
-float neutral_power = 1400;
+float neutral_power = 1351;
 
 //add constants
 #define PWM_MAX 1840
@@ -99,6 +106,7 @@ void safety_check();
 void init_pwm();
 void init_motor(uint8_t channel);
 void set_PWM(uint8_t channel, float time_on_us);
+void yaw_control();
 
 void pid_update();
 
@@ -137,6 +145,9 @@ float roll_setpoint = 0.0;
 float yaw_setpoint = 0.0;
 
 float imu_diff_copy = 0.0;
+
+float vive_x_offset = 0.0;
+float vive_y_offset = 0.0;
 
 struct Joystick
 {
@@ -196,6 +207,8 @@ void trap(int signal)
 
 int main(int argc, char * argv[])
 {
+  //call at start of main loop
+    init_shared_memory();
 
   //in main function before calibrate imu add
   init_pwm();
@@ -211,6 +224,8 @@ int main(int argc, char * argv[])
   signal(SIGINT, &trap);
 
   while (run_program == 1) {
+    //run this command at the start of the while(1) loop to refresh vive data
+    local_p=*position;  
 
     // keyboard_interface();
     joystick_interface();
@@ -223,6 +238,9 @@ int main(int argc, char * argv[])
 
       if (calibrate) {
         calibrate_imu();
+        //now you can use the vive sensor values: 
+        vive_x_offset = local_p.x;
+        vive_y_offset = local_p.y;
         firstrun = true;
         calibrate = false;
       }
@@ -232,7 +250,7 @@ int main(int argc, char * argv[])
       read_imu();   // read data from IMU, caluclate accelerometer pitch,roll
 
       update_filter();   // update complementary filter
-
+      yaw_control();
       pid_update();
 
       set_PWM(0, motor_0_pwm);
@@ -240,13 +258,14 @@ int main(int argc, char * argv[])
       set_PWM(2, motor_2_pwm);
       set_PWM(3, motor_3_pwm);
 
-      print_data();
     }
 
     // time
     gettimeofday(&tv, NULL);
     // safety checks
     safety_check();
+
+    print_data();
 
   }
   return 0;
@@ -255,11 +274,14 @@ int main(int argc, char * argv[])
 void safety_check()
 {
   static long last_heartbeat_time = 0;
+  static long last_vive_time = 0;
+  static long last_vive_value = 0;
   static int last_heartbeat = 0;
 
   if (firstrun) {
     long curr_time = tv.tv_sec * 1000LL + tv.tv_usec / 1000;
     last_heartbeat_time = curr_time;
+    last_vive_time = curr_time;
     firstrun = false;
   }
 
@@ -290,13 +312,27 @@ void safety_check()
     run_program = 0;
   }
 
+  if (curr_time > last_vive_time + SAFETY_VIVE_TO) {
+    printf("ending program due to vive timeout\n\r");
+    run_program = 0;
+  }
+
   if (joystick.sequence_num > last_heartbeat) {
     last_heartbeat_time = curr_time;
     last_heartbeat = joystick.sequence_num;
   }
 
+  if (local_p.version > last_vive_value) {
+    last_vive_time = curr_time;
+    last_vive_value = local_p.version;
+  }
+
   if (joystick.sequence_num == 255) {
     last_heartbeat = -1;
+  }
+
+  if (local_p.x - vive_x_offset > 1000.0 || local_p.x  - vive_x_offset < -1000.0 || local_p.y - vive_y_offset > 1000.0 || local_p.y - vive_y_offset < -1000.0){
+    run_program = 0;
   }
 
   if (run_program == 0.0) {
@@ -341,7 +377,7 @@ void joystick_interface()
     run_program = 0;
   }
 
-  thrust_mapped = map(joystick.thrust, 255, 0, -250, 250);
+  thrust_mapped = map(joystick.thrust, 255, 0, -100, 100);
   pitch_mapped = map(joystick.pitch, 255, 0, -8, 8);
   roll_mapped = map(joystick.roll, 255, 0, -8, 8);
 
@@ -350,7 +386,7 @@ void joystick_interface()
   thrust = thrust_mapped;
   pitch_setpoint = pitch_mapped;
   roll_setpoint = roll_mapped;
-  yaw_setpoint = yaw_mapped;
+  // yaw_setpoint = yaw_mapped;
 
   //thrust ++ byte 1 (down)
   //thrust -- byte 1 (up)
@@ -722,16 +758,17 @@ void pid_update()
 
 }
 
+void yaw_control(){
+    yaw_setpoint = KP_YAW_POSITION * local_p.yaw;
+}
+
 void print_data()
 {
-  // printf(
-  //   "%10.5f,%10.5f,%10.5f,%10.5f,%10.5f,%10.5f\n\r",
-  //   pitch_t,
-  //   pitch_setpoint,
-  //   roll_t,
-  //   roll_setpoint,
-  //   imu_data[2],
-  //   yaw_setpoint
-  // );
+  printf(
+    "%10.5f,%10.5f,%10.5f\n\r",
+    local_p.x - vive_x_offset,
+    local_p.y - vive_y_offset,
+    local_p.yaw
+  );
 
 }
